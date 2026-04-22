@@ -1,0 +1,106 @@
+@import url('https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 98%;
+    --foreground: 160 30% 12%;
+
+    --card: 40 30% 97%;
+    --card-foreground: 160 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 160 30% 12%;
+
+    --primary: 160 60% 28%;
+    --primary-foreground: 40 33% 98%;
+
+    --secondary: 42 80% 55%;
+    --secondary-foreground: 160 30% 12%;
+
+    --muted: 40 20% 93%;
+    --muted-foreground: 160 10% 45%;
+
+    --accent: 42 80% 55%;
+    --accent-foreground: 160 30% 12%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 40 20% 88%;
+    --input: 40 20% 88%;
+    --ring: 160 60% 28%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 160 40% 14%;
+    --sidebar-foreground: 40 33% 95%;
+    --sidebar-primary: 42 80% 55%;
+    --sidebar-primary-foreground: 160 30% 12%;
+    --sidebar-accent: 160 35% 20%;
+    --sidebar-accent-foreground: 40 33% 95%;
+    --sidebar-border: 160 30% 20%;
+    --sidebar-ring: 42 80% 55%;
+
+    --emerald-glow: 160 60% 38%;
+    --gold: 42 80% 55%;
+    --gold-light: 42 80% 70%;
+    --warm-bg: 40 33% 96%;
+    --islamic-pattern: 160 40% 92%;
+
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+
+  .dark {
+    --background: 160 30% 6%;
+    --foreground: 40 33% 95%;
+    --card: 160 25% 10%;
+    --card-foreground: 40 33% 95%;
+    --popover: 160 25% 10%;
+    --popover-foreground: 40 33% 95%;
+    --primary: 160 60% 40%;
+    --primary-foreground: 160 30% 6%;
+    --secondary: 42 80% 55%;
+    --secondary-foreground: 160 30% 6%;
+    --muted: 160 20% 15%;
+    --muted-foreground: 40 15% 60%;
+    --accent: 42 80% 55%;
+    --accent-foreground: 160 30% 6%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 160 20% 18%;
+    --input: 160 20% 18%;
+    --ring: 160 60% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+}
+
+.font-arabic {
+  font-family: 'Amiri', serif;
+}
+
+.geometric-pattern {
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23166534' fill-opacity='0.04'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+.gold-gradient {
+  background: linear-gradient(135deg, hsl(42, 80%, 55%), hsl(42, 80%, 65%));
+}
+
+.emerald-gradient {
+  background: linear-gradient(135deg, hsl(160, 60%, 28%), hsl(160, 60%, 38%));
+}

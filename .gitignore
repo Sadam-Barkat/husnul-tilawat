@@ -1,0 +1,23 @@
+# dependencies
+**/node_modules/
+
+# builds
+**/dist/
+**/build/
+
+# env secrets (never commit)
+**/.env
+**/.env.*
+!**/.env.example
+
+# Cursor / IDE
+.cursor/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# unrelated legacy folder in workspace
+backend/Real Time Intelligent Dashboard in Health Care/
+
