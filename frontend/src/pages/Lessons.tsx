@@ -1,13 +1,16 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { Volume2, Play, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import DashboardLayout from "@/components/DashboardLayout";
 import axios from "axios";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { checkRecitation } from "@/utils/checkRecitation";
 
 type LessonStatus = "completed" | "current" | "locked";
 
@@ -38,83 +41,10 @@ function getLatinLessonName(lesson: LessonDoc): string {
   return fromSlug || "lesson";
 }
 
-type UtterItem = { text: string; lang: string; voice?: SpeechSynthesisVoice | null };
-
-/** Bumps on each new Listen click so cancelled chains don't keep running or block UI */
-let ttsSession = 0;
-
-/**
- * TTS: Chrome/Edge need resume() in the same user gesture; many PCs have no Arabic voice (silent).
- * We always speak Latin name in en-US first, then Arabic in ar-SA if text exists. Repeat = run chain twice.
- * onDone runs when this session finishes (or immediately if nothing to speak).
- */
-function speakLessonWord(lesson: LessonDoc, repeat = true, onDone?: () => void) {
-  if (typeof window === "undefined" || !window.speechSynthesis) {
-    onDone?.();
-    return;
-  }
-
-  const mySession = ++ttsSession;
-  const synth = window.speechSynthesis;
-  synth.cancel();
-  try {
-    synth.resume();
-  } catch {
-    /* ignore */
-  }
-
-  const latin = getLatinLessonName(lesson);
-  const arabic = (lesson.arabicText || "").trim();
-
-  const chain: UtterItem[] = [];
-  if (latin) chain.push({ text: latin, lang: "en-US", voice: null });
-  if (arabic) chain.push({ text: arabic, lang: "ar-SA", voice: null });
-
-  if (chain.length === 0) {
-    onDone?.();
-    return;
-  }
-
-  const runPasses = repeat ? 2 : 1;
-  let pass = 0;
-  let index = 0;
-
-  const finish = () => {
-    if (mySession === ttsSession) onDone?.();
-  };
-
-  const speakNext = () => {
-    if (mySession !== ttsSession) return;
-
-    const voicesNow = synth.getVoices();
-    const ar = voicesNow.find((v) => v.lang.toLowerCase().startsWith("ar"));
-    if (index >= chain.length) {
-      pass += 1;
-      if (pass >= runPasses) {
-        finish();
-        return;
-      }
-      index = 0;
-    }
-    if (mySession !== ttsSession) return;
-
-    const item = chain[index++];
-    const u = new SpeechSynthesisUtterance(item.text);
-    u.lang = item.lang;
-    u.rate = item.lang.startsWith("ar") ? 0.85 : 0.95;
-    u.volume = 1;
-    const v = item.lang.startsWith("ar") && ar ? ar : item.voice;
-    if (v) u.voice = v;
-    u.onend = () => {
-      if (mySession === ttsSession) speakNext();
-    };
-    u.onerror = () => {
-      if (mySession === ttsSession) speakNext();
-    };
-    synth.speak(u);
-  };
-
-  setTimeout(speakNext, 0);
+function lessonComparisonStrings(lesson: LessonDoc): { display: string; compare: string } {
+  const display = (lesson.arabicText || lesson.title || "").trim();
+  const compare = display;
+  return { display, compare };
 }
 
 function getLessonStatus(lesson: LessonDoc, sorted: LessonDoc[], passed: Set<string>): LessonStatus {
@@ -125,7 +55,6 @@ function getLessonStatus(lesson: LessonDoc, sorted: LessonDoc[], passed: Set<str
 }
 
 export default function Lessons() {
-  const navigate = useNavigate();
   const location = useLocation();
   const [lessons, setLessons] = useState<LessonDoc[]>([]);
   const [passedIds, setPassedIds] = useState<Set<string>>(new Set());
@@ -135,6 +64,173 @@ export default function Lessons() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 12;
+  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState("");
+  const [checkResult, setCheckResult] = useState<any>(null);
+  const [practiceOpen, setPracticeOpen] = useState(false);
+  const [practiceLesson, setPracticeLesson] = useState<LessonDoc | null>(null);
+
+  const resetLesson = useCallback(() => {
+    setCheckResult(null);
+    setCheckError("");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+
+    const loadVoices = () => {
+      try {
+        const v = synth.getVoices?.() || [];
+        if (v.length) setTtsVoices(v);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    loadVoices();
+    // Some browsers fire this later (Chrome/Edge).
+    try {
+      synth.addEventListener("voiceschanged", loadVoices);
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        synth.removeEventListener("voiceschanged", loadVoices);
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
+
+  const speakArabic = useCallback(
+    (text: string, opts?: { onEnd?: () => void; rate?: number }) => {
+    if (typeof window === "undefined") return;
+    const t = String(text || "").trim();
+    if (!t) return;
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      alert("Text-to-speech is not available in this browser.");
+      return;
+    }
+
+    // Stop any previous speech immediately.
+    try {
+      synth.cancel();
+      synth.resume?.();
+    } catch {
+      /* ignore */
+    }
+
+    const pickVoice = (): SpeechSynthesisVoice | null => {
+      const voices = ttsVoices.length ? ttsVoices : (() => {
+        try {
+          return synth.getVoices?.() || [];
+        } catch {
+          return [];
+        }
+      })();
+      const arabicCandidates = voices.filter(
+        (v) => /^ar\b/i.test(v.lang) || /arab/i.test(v.lang) || /arab/i.test(v.name),
+      );
+      const urduCandidates = voices.filter((v) => /^ur\b/i.test(v.lang) || /urdu/i.test(v.lang) || /urdu/i.test(v.name));
+      const localArabic = arabicCandidates.find((v) => (v as any).localService) || arabicCandidates[0];
+      const localUrdu = urduCandidates.find((v) => (v as any).localService) || urduCandidates[0];
+      const anyLocal = voices.find((v) => (v as any).localService) || null;
+      return localArabic || localUrdu || anyLocal || (voices.length ? voices[0] : null);
+    };
+
+    const v = pickVoice();
+    const isArabic = v ? /^ar\b/i.test(v.lang) || /arab/i.test(v.lang) || /arab/i.test(v.name) : false;
+    const isUrdu = v ? /^ur\b/i.test(v.lang) || /urdu/i.test(v.lang) || /urdu/i.test(v.name) : false;
+    const fallbackLatin = opts && (opts as any).fallbackLatin ? String((opts as any).fallbackLatin) : "";
+    const textToSpeak = isArabic || isUrdu ? t : (fallbackLatin || t);
+
+    const u = new SpeechSynthesisUtterance(textToSpeak);
+    u.lang = v?.lang || (isUrdu ? "ur-PK" : "ar-SA");
+    u.rate = opts?.rate ?? 0.95;
+    u.volume = 1;
+    u.pitch = 1;
+    if (v) u.voice = v;
+    u.onend = () => opts?.onEnd?.();
+    u.onerror = (ev) => {
+      console.error("[TTS] error", ev);
+      opts?.onEnd?.();
+    };
+    u.onstart = () => {
+      console.log("[TTS] start", {
+        voices: ttsVoices.length,
+        speaking: synth.speaking,
+        paused: synth.paused,
+        voice: v ? { name: v.name, lang: v.lang, localService: (v as any).localService } : null,
+        textLen: textToSpeak.length,
+      });
+    };
+    synth.speak(u);
+    },
+    [ttsVoices],
+  );
+
+  const speakLessonWord = useCallback(
+    (lesson: LessonDoc, repeatOnce = false) => {
+      const arabicText = (lesson.arabicText || "").trim();
+      const latin = getLatinLessonName(lesson);
+      const text = arabicText || latin;
+      setSpeakingId(lesson._id);
+      speakArabic(text, {
+        onEnd: () => {
+          if (repeatOnce) {
+            speakArabic(text, {
+              onEnd: () => setSpeakingId(null),
+              rate: 0.95,
+              fallbackLatin: latin,
+            });
+          } else {
+            setSpeakingId(null);
+          }
+        },
+        fallbackLatin: latin,
+      });
+    },
+    [speakArabic],
+  );
+
+  const playAudioUrl = useCallback(
+    (audioUrl: string, onDone?: () => void) => {
+      if (!audioUrl) return false;
+      const u = String(audioUrl).trim();
+      if (!u) return false;
+      const resolved =
+        /^https?:\/\//i.test(u) ? u : u.startsWith("/") ? `http://127.0.0.1:5000${u}` : `http://127.0.0.1:5000/${u}`;
+      const audio = new Audio(resolved);
+      audio.onended = () => onDone?.();
+      audio.onerror = () => onDone?.();
+      audio.play().catch(() => onDone?.());
+      return true;
+    },
+    [],
+  );
+
+  const playMolviAudio = useCallback((audioUrl: string) => {
+    if (!audioUrl) return;
+    const u = String(audioUrl).trim();
+    const resolved =
+      /^https?:\/\//i.test(u) ? u : u.startsWith("/") ? `http://127.0.0.1:5000${u}` : `http://127.0.0.1:5000/${u}`;
+    const audio = new Audio(resolved);
+    audio.play().catch(() => {
+      alert("Could not play audio. Please check your connection.");
+    });
+  }, []);
+
+  const resetPractice = useCallback(() => {
+    resetLesson();
+    setPracticeLesson(null);
+  }, [resetLesson]);
 
   const sortedLessons = useMemo(
     () =>
@@ -154,21 +250,21 @@ export default function Lessons() {
     setPage((p) => Math.min(Math.max(0, p), totalPages - 1));
   }, [totalPages, sortedLessons.length]);
 
-  // Ensure voices load (needed on some browsers)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.speechSynthesis.getVoices();
-    const onVoicesChanged = () => window.speechSynthesis.getVoices();
-    window.speechSynthesis.onvoiceschanged = onVoicesChanged;
-    return () => {
-      window.speechSynthesis.onvoiceschanged = null;
-    };
-  }, []);
-
   const handleListen = useCallback((e: React.MouseEvent, lesson: LessonDoc) => {
     e.stopPropagation();
     setSpeakingId(lesson._id);
-    speakLessonWord(lesson, true, () => setSpeakingId(null));
+    // Use Web Speech TTS for listening. If audioUrl exists, user can still use "🔊 Listen to correct pronunciation".
+    speakLessonWord(lesson, false);
+  }, [speakLessonWord]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        window.speechSynthesis?.cancel?.();
+      } catch {
+        /* ignore */
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -291,8 +387,16 @@ export default function Lessons() {
         </>
         )}
 
-        <Dialog open={!!selectedLesson} onOpenChange={() => setSelectedLesson(null)}>
-          <DialogContent className="max-w-lg">
+        <Dialog
+          open={!!selectedLesson}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSelectedLesson(null);
+              resetLesson();
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-3">
                 <span className="font-arabic text-4xl text-primary">{selectedLesson?.arabicText}</span>
@@ -310,7 +414,11 @@ export default function Lessons() {
               </div>
               <button
                 type="button"
-                onClick={() => selectedLesson && speakLessonWord(selectedLesson, true)}
+                onClick={() => {
+                  if (!selectedLesson) return;
+                  setSpeakingId(selectedLesson._id);
+                  speakLessonWord(selectedLesson, true);
+                }}
                 className="w-full flex items-center gap-3 bg-primary/5 rounded-lg p-4 hover:bg-primary/10 transition-colors text-left"
               >
                 <span className="w-12 h-12 rounded-full emerald-gradient flex items-center justify-center hover:scale-105 transition-transform shrink-0">
@@ -321,18 +429,127 @@ export default function Lessons() {
                   <p className="text-xs text-muted-foreground">Tap to hear the word repeated</p>
                 </div>
               </button>
+
               <div className="flex gap-3">
                 <Button
                   className="flex-1"
+                  type="button"
                   onClick={() => {
-                    const l = selectedLesson;
-                    setSelectedLesson(null);
-                    if (l) navigate(`/pronunciation?lessonId=${l._id}`);
+                    if (!selectedLesson) return;
+                    setPracticeLesson(selectedLesson);
+                    setPracticeOpen(true);
+                    resetLesson();
                   }}
                 >
-                  Practice Now
+                  Practice
                 </Button>
                 <Button variant="outline" onClick={() => setSelectedLesson(null)}>Close</Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={practiceOpen}
+          onOpenChange={(open) => {
+            setPracticeOpen(open);
+            if (!open) resetPractice();
+          }}
+        >
+          <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-3">
+                <span className="font-bold">Practice</span>
+                <span className="text-muted-foreground text-sm">Select a letter, then recite</span>
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {sortedLessons
+                  .filter((l) => getLessonStatus(l, sortedLessons, passedIds) !== "locked")
+                  .map((l) => (
+                    <button
+                      key={l._id}
+                      type="button"
+                      onClick={() => {
+                        setPracticeLesson(l);
+                        resetLesson();
+                      }}
+                      className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 ${
+                        practiceLesson?._id === l._id ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted"
+                      }`}
+                    >
+                      <span className="font-arabic text-xl">{l.arabicText}</span>
+                      <span className="text-xs opacity-80">{getLatinLessonName(l)}</span>
+                    </button>
+                  ))}
+              </div>
+
+              {practiceLesson && (
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Selected</p>
+                  <p className="font-arabic text-3xl" dir="rtl">
+                    {practiceLesson.arabicText}
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Button
+                  type="button"
+                  disabled={checking || !practiceLesson}
+                  variant={isRecording ? "destructive" : "default"}
+                  onClick={async () => {
+                    if (!practiceLesson) return;
+                    if (!isRecording) {
+                      resetLesson();
+                      try {
+                        await startRecording();
+                      } catch {
+                        setCheckError("Could not access microphone. Please allow mic permission and try again.");
+                      }
+                      return;
+                    }
+
+                    try {
+                      setCheckError("");
+                      setChecking(true);
+                      const blob = await stopRecording();
+                      const expectedText = lessonComparisonStrings(practiceLesson).compare;
+                      const result = await checkRecitation(blob, "lesson", expectedText);
+                      setCheckResult(result);
+                    } catch {
+                      setCheckError("Could not process audio, please try again");
+                    } finally {
+                      setChecking(false);
+                    }
+                  }}
+                >
+                  {checking ? "Checking…" : isRecording ? "Stop & Check" : "Practice"}
+                </Button>
+
+                {checkError && <p className="text-xs text-destructive">{checkError}</p>}
+
+                {checkResult && (
+                  <div className={checkResult.passed ? "text-green-600" : "text-red-600"}>
+                    <p className="font-semibold">{checkResult.passed ? "You win" : "You loss"}</p>
+                    <p>Score: {checkResult.score}</p>
+                    <p>You said: {checkResult.spokenWord}</p>
+                    <p>Expected: {checkResult.expectedWord}</p>
+                    {!checkResult.passed && (
+                      <button
+                        onClick={() => playMolviAudio(String(practiceLesson?.audioUrl || ""))}
+                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        🔊 Listen to correct pronunciation
+                      </button>
+                    )}
+                    <button onClick={resetLesson} className="underline ml-3">
+                      Try Again
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </DialogContent>

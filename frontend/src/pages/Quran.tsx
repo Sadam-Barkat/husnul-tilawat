@@ -22,7 +22,9 @@ import {
   type FlatVerseLine,
 } from "@/lib/mushafMadani";
 import { ChevronLeft, ChevronRight, Play, Square, Mic } from "lucide-react";
-import { liveOrderedWordStatuses, toPlainArabic } from "@/lib/arabicRecitationCompare";
+import { toPlainArabic } from "@/lib/arabicRecitationCompare";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { checkRecitation } from "@/utils/checkRecitation";
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -37,8 +39,28 @@ type SpeechRecognitionLike = {
 };
 
 const TOTAL_PAGES = 604;
-/** No new speech-recognition results for this long → stop live session. */
-const LIVE_SILENCE_MS = 2000;
+
+const RECITER_STORAGE_KEY = "husnQuranAudioReciter";
+
+/** Al Quran Cloud audio editions (`GET /v1/ayah/{surah}:{ayah}/{identifier}`) — all verse-by-verse on api.alquran.cloud. */
+const AUDIO_RECITERS: ReadonlyArray<{ id: string; name: string }> = [
+  { id: "ar.alafasy", name: "Mishary Alafasy" },
+  { id: "ar.abdurrahmaansudais", name: "Abdurrahman As-Sudais" },
+  { id: "ar.mahermuaiqly", name: "Maher Al Muaiqly" },
+  { id: "ar.husary", name: "Al-Husary" },
+  { id: "ar.abdullahbasfar", name: "Abdullah Basfar" },
+];
+
+function readStoredReciterId(): string {
+  if (typeof window === "undefined") return AUDIO_RECITERS[0].id;
+  try {
+    const v = localStorage.getItem(RECITER_STORAGE_KEY);
+    if (v && AUDIO_RECITERS.some((r) => r.id === v)) return v;
+  } catch {
+    /* ignore */
+  }
+  return AUDIO_RECITERS[0].id;
+}
 
 /** Word highlight key: surah-ayah-wordIndex (1-based word within ayah). */
 function wordHighlightKey(chapter: number, verse: number, word: number): string {
@@ -79,19 +101,29 @@ export default function Quran() {
   const [playingAyahKey, setPlayingAyahKey] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [audioError, setAudioError] = useState("");
+  const [audioReciterId, setAudioReciterId] = useState<string>(() => readStoredReciterId());
 
-  /** Live: browser Arabic speech recognition vs selected ayah (tap a line to choose; defaults to first on page). */
-  const [isRecording, setIsRecording] = useState(false);
-  const [liveHint, setLiveHint] = useState("");
   /** Which mushaf line is the reference for live check: `${surah}-${verseNumber}` from data. */
   const [liveTargetAyahKey, setLiveTargetAyahKey] = useState<string | null>(null);
-  const speechRef = useRef<SpeechRecognitionLike | null>(null);
-  const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const liveRecitingRef = useRef(false);
-  const lastSpeechAtRef = useRef(0);
-  const liveMetaRef = useRef<{ surah: number; ayahNum: number; referencePlain: string } | null>(null);
   const [wordMistakes, setWordMistakes] = useState<Set<string>>(new Set());
   const [wordCorrect, setWordCorrect] = useState<Set<string>>(new Set());
+
+  const { isRecording: isTilawatRecording, startRecording, stopRecording } = useAudioRecorder();
+  const [tilawatChecking, setTilawatChecking] = useState(false);
+  const [tilawatError, setTilawatError] = useState("");
+  const [tilawatResult, setTilawatResult] = useState<any>(null);
+  const [tilawatAyah, setTilawatAyah] = useState<{ surah: number; ayah: string } | null>(null);
+
+  /** True while "Listen Page" should chain ayat and advance to the next mushaf page automatically. */
+  const continuousListenRef = useRef(false);
+  /** When true, the next pageNum effect run should start page-1 audio instead of stopping (cross-page listen). */
+  const autoListenAdvanceRef = useRef(false);
+  const pageNumRef = useRef(pageNum);
+  pageNumRef.current = pageNum;
+  const isPlayingRef = useRef(isPlaying);
+  const playingAyahKeyRef = useRef(playingAyahKey);
+  isPlayingRef.current = isPlaying;
+  playingAyahKeyRef.current = playingAyahKey;
 
   useEffect(() => {
     loadMadaniMushaf()
@@ -103,6 +135,8 @@ export default function Quran() {
 
   const currentPage = pages?.[pageNum];
   const lines = useMemo(() => flattenPage(currentPage), [currentPage]);
+  const linesRef = useRef<FlatVerseLine[]>([]);
+  linesRef.current = lines;
 
   useEffect(() => {
     if (lines.length === 0) {
@@ -169,63 +203,103 @@ export default function Quran() {
     setAudioError("");
   }, []);
 
-  // When page changes, stop playing
+  const playAyahRef = useRef<((surah: number, ayah: string) => Promise<void>) | null>(null);
+  const playAyah = useCallback(
+    async (surah: number, ayah: string) => {
+      stopAudio();
+      setAudioError("");
+      setPlayingAyahKey(`${surah}-${ayah}`);
+      setIsPlaying(true);
+
+      try {
+        // Al Quran Cloud: per-ayah audio URL for the selected reciter edition
+        // https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/{edition}
+        const res = await fetch(`https://api.alquran.cloud/v1/ayah/${surah}:${ayah}/${audioReciterId}`);
+        if (!res.ok) throw new Error("Failed to fetch audio URL");
+        const data = await res.json();
+        const audioUrl = data.data.audio;
+
+        if (!audioRef.current) {
+          audioRef.current = new Audio();
+        }
+        audioRef.current.src = audioUrl;
+
+        audioRef.current.onended = () => {
+          // Auto-play next ayah on the same page if available
+          const currentIndex = lines.findIndex((l) => l.surah === surah && l.verseNumber === ayah);
+          if (currentIndex !== -1 && currentIndex + 1 < lines.length) {
+            const nextAyah = lines[currentIndex + 1];
+            void playAyahRef.current?.(nextAyah.surah, nextAyah.verseNumber);
+          } else if (continuousListenRef.current && pageNumRef.current < TOTAL_PAGES) {
+            autoListenAdvanceRef.current = true;
+            setPageNum((p) => Math.min(TOTAL_PAGES, p + 1));
+          } else {
+            continuousListenRef.current = false;
+            setIsPlaying(false);
+            setPlayingAyahKey(null);
+          }
+        };
+
+        audioRef.current.onerror = () => {
+          setAudioError("Failed to load audio");
+          continuousListenRef.current = false;
+          setIsPlaying(false);
+          setPlayingAyahKey(null);
+        };
+
+        await audioRef.current.play();
+      } catch (err) {
+        console.error("Audio error:", err);
+        setAudioError("Audio unavailable");
+        continuousListenRef.current = false;
+        setIsPlaying(false);
+        setPlayingAyahKey(null);
+      }
+    },
+    [lines, stopAudio, audioReciterId],
+  );
+  playAyahRef.current = playAyah;
+
+  // If the user switches reciter while audio is playing, reload the same ayah with the new voice.
   useEffect(() => {
+    if (!isPlayingRef.current || !playingAyahKeyRef.current) return;
+    const key = playingAyahKeyRef.current;
+    const dashIdx = key.indexOf("-");
+    if (dashIdx <= 0) return;
+    const surahNum = parseInt(key.slice(0, dashIdx), 10);
+    const ayahStr = key.slice(dashIdx + 1);
+    if (!Number.isFinite(surahNum)) return;
+    void playAyahRef.current?.(surahNum, ayahStr);
+  }, [audioReciterId]);
+
+  // When page changes: stop audio unless we intentionally advanced for continuous "Listen Page".
+  // Depends only on pageNum so mushaf `lines` filling in later does not cancel an active session.
+  useEffect(() => {
+    if (autoListenAdvanceRef.current) {
+      autoListenAdvanceRef.current = false;
+      const L = linesRef.current;
+      if (L.length > 0) {
+        const f = L[0];
+        setLiveTargetAyahKey(ayahRowKey(f.surah, f.verseNumber));
+        void playAyahRef.current?.(f.surah, f.verseNumber);
+      } else {
+        continuousListenRef.current = false;
+        setIsPlaying(false);
+        setPlayingAyahKey(null);
+      }
+      return;
+    }
+    continuousListenRef.current = false;
     stopAudio();
   }, [pageNum, stopAudio]);
 
-  const playAyah = async (surah: number, ayah: string) => {
-    stopAudio();
-    setAudioError("");
-    setPlayingAyahKey(`${surah}-${ayah}`);
-    setIsPlaying(true);
-
-    try {
-      // Using Alquran.cloud API for audio (Mishary Rashid Alafasy)
-      // Format: https://cdn.islamic.network/quran/audio/128/ar.alafasy/{ayah_number_in_quran}.mp3
-      // We need the global ayah number. The API provides a way to get it by surah:ayah
-      const res = await fetch(`https://api.alquran.cloud/v1/ayah/${surah}:${ayah}/ar.alafasy`);
-      if (!res.ok) throw new Error("Failed to fetch audio URL");
-      const data = await res.json();
-      const audioUrl = data.data.audio;
-
-      if (!audioRef.current) {
-        audioRef.current = new Audio();
-      }
-      audioRef.current.src = audioUrl;
-
-      audioRef.current.onended = () => {
-        // Auto-play next ayah on the same page if available
-        const currentIndex = lines.findIndex((l) => l.surah === surah && l.verseNumber === ayah);
-        if (currentIndex !== -1 && currentIndex + 1 < lines.length) {
-          const nextAyah = lines[currentIndex + 1];
-          playAyah(nextAyah.surah, nextAyah.verseNumber);
-        } else {
-          setIsPlaying(false);
-          setPlayingAyahKey(null);
-        }
-      };
-
-      audioRef.current.onerror = () => {
-        setAudioError("Failed to load audio");
-        setIsPlaying(false);
-        setPlayingAyahKey(null);
-      };
-
-      await audioRef.current.play();
-    } catch (err) {
-      console.error("Audio error:", err);
-      setAudioError("Audio unavailable");
-      setIsPlaying(false);
-      setPlayingAyahKey(null);
-    }
-  };
-
   const togglePagePlay = () => {
     if (isPlaying) {
+      continuousListenRef.current = false;
       stopAudio();
     } else {
       if (lines.length > 0) {
+        continuousListenRef.current = true;
         const f = lines[0];
         setLiveTargetAyahKey(ayahRowKey(f.surah, f.verseNumber));
         void playAyah(f.surah, f.verseNumber);
@@ -234,152 +308,15 @@ export default function Quran() {
   };
 
   const handleAyahClick = (surah: number, ayah: string) => {
+    continuousListenRef.current = false;
     setLiveTargetAyahKey(ayahRowKey(surah, ayah));
     void playAyah(surah, ayah);
   };
 
-  const stopLiveRecognition = useCallback(() => {
-    liveRecitingRef.current = false;
-    liveMetaRef.current = null;
-    if (silenceIntervalRef.current != null) {
-      clearInterval(silenceIntervalRef.current);
-      silenceIntervalRef.current = null;
-    }
-    const r = speechRef.current;
-    speechRef.current = null;
-    try {
-      r?.stop();
-    } catch {
-      /* ignore */
-    }
-    setIsRecording(false);
-  }, []);
-
-  const startLiveRecognition = useCallback(() => {
-    if (lines.length === 0) return;
-    const refLine =
-      (liveTargetAyahKey != null ? lines.find((l) => ayahRowKey(l.surah, l.verseNumber) === liveTargetAyahKey) : null) ??
-      lines[0];
-    if (!refLine) return;
-
-    const Ctor = (
-      typeof window !== "undefined"
-        ? (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ||
-          (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition
-        : undefined
-    ) as (new () => SpeechRecognitionLike) | undefined;
-
-    if (!Ctor) {
-      setAudioError("Speech recognition is not supported in this browser. Try Chrome or Edge.");
-      return;
-    }
-
-    stopLiveRecognition();
-
-    setWordMistakes(new Set());
-    setWordCorrect(new Set());
-    setAudioError("");
-    setLiveHint("Recite this ayah — words turn green or red as you go. Pauses 2s end the session. Tap another ayah to change the line.");
-
-    const surah = refLine.surah;
-    const ayahNum = parseInt(String(refLine.verseNumber).replace(/[^\d]/g, ""), 10) || 1;
-    const referencePlain = toPlainArabic(refLine.text);
-    liveMetaRef.current = { surah, ayahNum, referencePlain };
-
-    const rec = new Ctor();
-    speechRef.current = rec;
-    rec.lang = "ar-SA";
-    rec.continuous = true;
-    rec.interimResults = true;
-
-    const applyTranscript = (raw: string) => {
-      const recognized = toPlainArabic(raw.trim());
-      lastSpeechAtRef.current = Date.now();
-      const meta = liveMetaRef.current;
-      if (!meta) return;
-      const statuses = liveOrderedWordStatuses(meta.referencePlain, recognized);
-      const correct = new Set<string>();
-      const mistakes = new Set<string>();
-      for (let i = 0; i < statuses.length; i++) {
-        const k = wordHighlightKey(meta.surah, meta.ayahNum, i + 1);
-        if (statuses[i] === "correct") correct.add(k);
-        else if (statuses[i] === "error") mistakes.add(k);
-      }
-      setWordCorrect(correct);
-      setWordMistakes(mistakes);
-    };
-
-    rec.onresult = (event) => {
-      let line = "";
-      for (let i = 0; i < event.results.length; i++) {
-        line += event.results[i]?.[0]?.transcript ?? "";
-      }
-      applyTranscript(line);
-    };
-
-    rec.onerror = (ev) => {
-      const err = ev?.error;
-      if (err === "aborted") return;
-      if (err === "no-speech") return;
-      if (err === "not-allowed" || err === "service-not-allowed") {
-        setAudioError("Microphone or speech recognition permission denied.");
-      } else {
-        setAudioError("Speech recognition hit an error. Tap the button to try again.");
-      }
-      stopLiveRecognition();
-    };
-
-    rec.onend = () => {
-      if (!liveRecitingRef.current) return;
-      try {
-        rec.start();
-      } catch {
-        /* ignore */
-      }
-    };
-
-    lastSpeechAtRef.current = Date.now();
-    liveRecitingRef.current = true;
-
-    silenceIntervalRef.current = window.setInterval(() => {
-      if (!liveRecitingRef.current) return;
-      if (Date.now() - lastSpeechAtRef.current >= LIVE_SILENCE_MS) {
-        stopLiveRecognition();
-        setLiveHint("Stopped after 2 seconds without speech.");
-      }
-    }, 300);
-
-    try {
-      rec.start();
-      setIsRecording(true);
-    } catch (e) {
-      console.error(e);
-      setAudioError("Could not start speech recognition.");
-      stopLiveRecognition();
-    }
-  }, [lines, liveTargetAyahKey, stopLiveRecognition]);
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      stopLiveRecognition();
-      setLiveHint("");
-      return;
-    }
-    startLiveRecognition();
-  };
-
   useEffect(() => {
     setWordMistakes(new Set());
     setWordCorrect(new Set());
-    setLiveHint("");
-    stopLiveRecognition();
-  }, [pageNum, stopLiveRecognition]);
-
-  useEffect(() => {
-    return () => {
-      stopLiveRecognition();
-    };
-  }, [stopLiveRecognition]);
+  }, [pageNum]);
 
   return (
     <DashboardLayout>
@@ -443,13 +380,13 @@ export default function Quran() {
                 </Button>
               </div>
               <div className="hidden md:block w-px h-6 bg-border" />
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <Button
                   size="sm"
                   variant={isPlaying ? "destructive" : "default"}
                   className="h-8 gap-1.5"
                   onClick={togglePagePlay}
-                  disabled={lines.length === 0 || isRecording}
+                  disabled={lines.length === 0 || isTilawatRecording || tilawatChecking}
                 >
                   {isPlaying ? (
                     <>
@@ -463,27 +400,94 @@ export default function Quran() {
                     </>
                   )}
                 </Button>
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground shrink-0">Reciter</Label>
+                  <Select
+                    value={audioReciterId}
+                    onValueChange={(v) => {
+                      setAudioReciterId(v);
+                      try {
+                        localStorage.setItem(RECITER_STORAGE_KEY, v);
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    disabled={isTilawatRecording || tilawatChecking}
+                  >
+                    <SelectTrigger
+                      className="h-8 w-[min(100vw-10rem,10.5rem)] sm:w-[10.5rem]"
+                      title="Reciter — audio from api.alquran.cloud"
+                    >
+                      <SelectValue placeholder="Reciter" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-64">
+                      {AUDIO_RECITERS.map((r) => (
+                        <SelectItem key={r.id} value={r.id}>
+                          {r.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Button
                   size="sm"
-                  variant={isRecording ? "destructive" : "outline"}
+                  variant={isTilawatRecording ? "destructive" : "secondary"}
                   className="h-8 gap-1.5"
-                  onClick={toggleRecording}
-                  disabled={lines.length === 0 || isPlaying}
-                  title="Tap an ayah on the page to select it (gold ring), then Live recitation. Defaults to the first ayah on the page. Chrome/Edge."
+                  disabled={lines.length === 0 || isPlaying || tilawatChecking}
+                  onClick={async () => {
+                    try {
+                      setTilawatError("");
+                      if (!isTilawatRecording) {
+                        setTilawatResult(null);
+                        setWordMistakes(new Set());
+                        setWordCorrect(new Set());
+                        await startRecording();
+                        return;
+                      }
+                      setTilawatChecking(true);
+                      const blob = await stopRecording();
+                      const refLine =
+                        (liveTargetAyahKey != null
+                          ? lines.find((l) => ayahRowKey(l.surah, l.verseNumber) === liveTargetAyahKey)
+                          : null) ?? lines[0];
+                      const expectedAyah = (refLine?.text || "").trim();
+                      if (refLine) setTilawatAyah({ surah: refLine.surah, ayah: refLine.verseNumber });
+                      const result = await checkRecitation(blob, "quran", expectedAyah);
+                      setTilawatResult(result);
+                      if (refLine && Array.isArray(result?.wordResults)) {
+                        const ayahNum = parseInt(String(refLine.verseNumber).replace(/[^\d]/g, ""), 10) || 1;
+                        const mistakes = new Set<string>();
+                        const correct = new Set<string>();
+                        result.wordResults.forEach((w: any, idx: number) => {
+                          const k = wordHighlightKey(refLine.surah, ayahNum, idx + 1);
+                          if (w?.correct) correct.add(k);
+                          else mistakes.add(k);
+                        });
+                        setWordMistakes(mistakes);
+                        setWordCorrect(correct);
+                      }
+                    } catch (e) {
+                      console.error("[Quran] checkRecitation failed:", e);
+                      setTilawatError("Could not process audio, please try again");
+                    } finally {
+                      setTilawatChecking(false);
+                    }
+                  }}
                 >
-                  {isRecording ? (
+                  {isTilawatRecording ? (
                     <>
                       <Square className="w-3.5 h-3.5 fill-current" />
-                      Stop
+                      Stop &amp; Check
                     </>
                   ) : (
                     <>
                       <Mic className="w-3.5 h-3.5" />
-                      Live recitation
+                      Start Tilawat
                     </>
                   )}
                 </Button>
                 {audioError && <span className="text-xs text-destructive">{audioError}</span>}
+                {tilawatError && <span className="text-xs text-destructive">{tilawatError}</span>}
               </div>
             </div>
           )}
@@ -518,13 +522,13 @@ export default function Quran() {
                 wordMistakes={wordMistakes}
                 wordCorrect={wordCorrect}
               />
-            </div>
 
-            {(isRecording || liveHint) && (
-              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-black/80 text-white text-xs p-2 rounded max-w-xl z-50 text-center px-3 leading-snug">
-                {isRecording ? "Listening… pause 2s to finish, or tap Stop." : liveHint}
-              </div>
-            )}
+              {tilawatResult && typeof tilawatResult?.accuracy === "number" && (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Accuracy: {tilawatResult.accuracy}% ({tilawatResult.correctWords}/{tilawatResult.totalWords} words correct)
+                </p>
+              )}
+            </div>
 
             <Button
               variant="ghost"
@@ -538,15 +542,7 @@ export default function Quran() {
           </div>
         )}
 
-        {pages && (
-          <p className="text-[11px] text-muted-foreground leading-relaxed text-center mt-2 shrink-0">
-            Layout data: {mushafMadaniAttribution.name} ({mushafMadaniAttribution.license}) —{" "}
-            <a href={mushafMadaniAttribution.url} className="underline hover:text-foreground" target="_blank" rel="noreferrer">
-              {mushafMadaniAttribution.author}
-            </a>
-            . Text sourcing per upstream (Quran.com API / quranjson).
-          </p>
-        )}
+        {pages && null}
       </div>
     </DashboardLayout>
   );

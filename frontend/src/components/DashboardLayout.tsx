@@ -1,25 +1,50 @@
-import { BookOpen, Mic, HelpCircle, BarChart3, MessageCircle, Home, LogOut, ScrollText } from "lucide-react";
-import { NavLink } from "@/components/NavLink";
-import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
-  SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
+  BookOpen,
+  Mic,
+  HelpCircle,
+  BarChart3,
+  MessageCircle,
+  Home,
+  LogOut,
+  ScrollText,
+  Languages,
+} from "lucide-react";
+import { NavLink } from "@/components/NavLink";
+import { useNavigate } from "react-router-dom";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 
-const navItems = [
+type NavItem = {
+  title: string;
+  url: string;
+  icon: typeof Home;
+  /** If false, NavLink stays active for nested paths (e.g. /arabic-grammar/:topicId). */
+  end?: boolean;
+};
+
+const navItems: NavItem[] = [
   { title: "Dashboard", url: "/dashboard", icon: Home },
   { title: "Qur'an", url: "/quran", icon: ScrollText },
   { title: "Lessons", url: "/lessons", icon: BookOpen },
   { title: "AI Pronunciation", url: "/pronunciation", icon: Mic },
+  { title: "Arabic Grammar", url: "/arabic-grammar", icon: Languages, end: false },
   { title: "Quizzes", url: "/quizzes", icon: HelpCircle },
   { title: "Progress", url: "/progress", icon: BarChart3 },
   { title: "Feedback", url: "/feedback", icon: MessageCircle },
 ];
 
 function AppSidebar() {
-  const { state } = useSidebar();
-  const collapsed = state === "collapsed";
   const navigate = useNavigate();
 
   return (
@@ -29,7 +54,7 @@ function AppSidebar() {
           <div className="w-8 h-8 rounded-lg gold-gradient flex items-center justify-center shrink-0">
             <BookOpen className="w-4 h-4 text-foreground" />
           </div>
-          {!collapsed && <span className="font-bold text-sidebar-foreground">Husn-ul-Tilawat</span>}
+          <span className="font-bold text-sidebar-foreground group-data-[collapsible=icon]:hidden">Husn-ul-Tilawat</span>
         </div>
         <SidebarGroup>
           <SidebarGroupLabel className="text-sidebar-foreground/50">Menu</SidebarGroupLabel>
@@ -37,10 +62,15 @@ function AppSidebar() {
             <SidebarMenu>
               {navItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <NavLink to={item.url} end className="hover:bg-sidebar-accent/50" activeClassName="bg-sidebar-accent text-sidebar-primary font-medium">
+                  <SidebarMenuButton asChild tooltip={item.title}>
+                    <NavLink
+                      to={item.url}
+                      end={item.end !== false}
+                      className="hover:bg-sidebar-accent/50"
+                      activeClassName="bg-sidebar-accent text-sidebar-primary font-medium"
+                    >
                       <item.icon className="mr-2 h-4 w-4" />
-                      {!collapsed && <span>{item.title}</span>}
+                      <span className="group-data-[collapsible=icon]:hidden">{item.title}</span>
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -60,7 +90,7 @@ function AppSidebar() {
               navigate("/auth?mode=login");
             }}
           >
-            <LogOut className="mr-2 h-4 w-4" /> {!collapsed && "Log Out"}
+            <LogOut className="mr-2 h-4 w-4" /> <span className="group-data-[collapsible=icon]:hidden">Log Out</span>
           </Button>
         </div>
       </SidebarContent>

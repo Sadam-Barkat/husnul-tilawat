@@ -12,6 +12,7 @@ import Quizzes from "./pages/Quizzes";
 import ProgressPage from "./pages/ProgressPage";
 import Feedback from "./pages/Feedback";
 import Quran from "./pages/Quran";
+import ArabicGrammar from "./pages/ArabicGrammar";
 import NotFound from "./pages/NotFound";
 import AdminLogin from "./pages/admin/AdminLogin";
 import AdminLayout from "./pages/admin/AdminLayout";
@@ -123,6 +124,22 @@ const App = () => (
             element={
               <ProtectedRoute>
                 <Quran />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/arabic-grammar/:topicId"
+            element={
+              <ProtectedRoute>
+                <ArabicGrammar />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/arabic-grammar"
+            element={
+              <ProtectedRoute>
+                <ArabicGrammar />
               </ProtectedRoute>
             }
           />

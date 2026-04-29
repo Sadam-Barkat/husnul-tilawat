@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+transformers
+torch
+torchaudio
+mishkal
+
+imageio-ffmpeg
+numpy

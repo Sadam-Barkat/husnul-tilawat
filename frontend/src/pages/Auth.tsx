@@ -254,7 +254,7 @@ export default function Auth() {
                     id="name"
                     name="name"
                     autoComplete="name"
-                    placeholder="Minahil Ahmad"
+                    placeholder="Your full name"
                     className="pl-10"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -270,7 +270,7 @@ export default function Auth() {
                     name="email"
                     type="email"
                     autoComplete="email"
-                    placeholder="minahil@example.com"
+                    placeholder="you@example.com"
                     className="pl-10"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -345,7 +345,7 @@ export default function Auth() {
                     name="email"
                     type="email"
                     autoComplete="email"
-                    placeholder="minahil@example.com"
+                    placeholder="you@example.com"
                     className="pl-10"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}

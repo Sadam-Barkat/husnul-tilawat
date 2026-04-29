@@ -1,8 +1,9 @@
 /**
  * Express server: DB connection and auth routes only.
- * Load .env first so MONGO_URI, JWT_SECRET, PORT etc. are available.
+ * Load .env from this folder (backend/) — not from process.cwd(), so starting Node from the repo root still works.
  */
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
@@ -54,8 +55,10 @@ app.use('/api/progress', require('./routes/progress'));
 // Admin dashboard API (JWT + role admin)
 app.use('/api/admin', require('./routes/admin'));
 
-// Quran page: OpenAI Whisper transcription (protected — server uses OPENAI_API_KEY)
-app.use('/api/quran-whisper', require('./routes/quranWhisper'));
+// AI check (speech → transcript → comparison)
+app.use('/api', require('./routes/checkRecitation'));
+// Lesson audio (ElevenLabs TTS)
+app.use('/api', require('./routes/lessonTts'));
 
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);

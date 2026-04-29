@@ -14,6 +14,12 @@
 .cursor/
 .vscode/
 
+# python-ai
+python-ai/venv/
+python-ai/__pycache__/
+python-ai/*.pyc
+~/.cache/huggingface/
+
 # OS
 .DS_Store
 Thumbs.db
