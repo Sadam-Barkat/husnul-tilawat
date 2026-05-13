@@ -257,10 +257,9 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(400).json({ message: 'Email is required' });
     }
     const emailNorm = String(email).toLowerCase().trim();
-    const user = await User.findOne({ email: emailNorm }).select(
-      '+passwordResetLastSentAt +emailVerified',
-    );
-    if (!user || user.emailVerified === false) {
+    const user = await User.findOne({ email: emailNorm }).select('+passwordResetLastSentAt');
+    // Send reset for any existing account (including not-yet-verified) so users can recover access.
+    if (!user) {
       return res.json({ message: generic });
     }
     if (

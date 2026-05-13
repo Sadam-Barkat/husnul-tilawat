@@ -13,7 +13,8 @@ let OpusEncoderClass = null;
 try {
   OpusEncoderClass = require('@discordjs/opus').OpusEncoder;
 } catch (e) {
-  console.warn('[QRC] @discordjs/opus not available:', e.message);
+  const msg = e && e.message ? String(e.message).split('\n')[0] : String(e);
+  console.warn('[QRC] Native Opus unavailable; using opusscript.', msg.slice(0, 120));
 }
 
 const PATH = '/api/qrc-stream';

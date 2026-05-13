@@ -22,6 +22,8 @@ type FeedbackDoc = {
 export default function Landing() {
   const navigate = useNavigate();
   const [testimonials, setTestimonials] = useState<{ name: string; text: string; rating: number }[]>([]);
+  /** True when /api/feedback failed (e.g. backend not running) — different from “no rows yet”. */
+  const [feedbackFetchFailed, setFeedbackFetchFailed] = useState(false);
   const [page, setPage] = useState(0);
   const pageSize = 3;
 
@@ -37,8 +39,11 @@ export default function Landing() {
           }));
           setTestimonials(mapped);
         }
-      } catch {
-        // Ignore errors and keep any existing testimonials (which default to empty)
+      } catch (e) {
+        setFeedbackFetchFailed(true);
+        if (import.meta.env.DEV) {
+          console.warn("[Landing] /api/feedback failed — is the backend running on port 5000?", e);
+        }
       }
     };
     fetchFeedback();
@@ -125,8 +130,17 @@ export default function Landing() {
         <div className="container mx-auto px-4">
           <h2 className="text-3xl font-bold text-center mb-12">Loved by Learners Worldwide</h2>
           {testimonials.length === 0 ? (
-            <p className="text-center text-muted-foreground">
-              No feedback has been submitted yet. Be the first to share your experience!
+            <p className="text-center text-muted-foreground max-w-lg mx-auto">
+              {feedbackFetchFailed ? (
+                <>
+                  Could not load reviews: the app server is not reachable (start{" "}
+                  <code className="text-xs bg-muted px-1 py-0.5 rounded">npm start</code> in the{" "}
+                  <code className="text-xs bg-muted px-1 py-0.5 rounded">backend</code> folder on port 5000, then
+                  refresh). If the server is already running, check the browser console.
+                </>
+              ) : (
+                <>No feedback has been submitted yet. Be the first to share your experience!</>
+              )}
             </p>
           ) : (
             <>
