@@ -3,6 +3,7 @@
  * Stores lesson metadata, rule summary, example text, and optional audio URL.
  */
 const mongoose = require('mongoose');
+const { toPlainArabic } = require('../utils/plainArabic');
 
 const lessonSchema = new mongoose.Schema(
   {
@@ -64,6 +65,17 @@ const lessonSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+lessonSchema.pre('save', function syncPlainArabic(next) {
+  const withHarakat = this.arabicText && String(this.arabicText).trim();
+  if (!withHarakat) return next();
+  const plain = toPlainArabic(withHarakat);
+  const existing = this.arabicTextForComparison && String(this.arabicTextForComparison).trim();
+  if (!existing || this.isModified('arabicText')) {
+    this.arabicTextForComparison = plain;
+  }
+  next();
+});
 
 module.exports = mongoose.model('Lesson', lessonSchema);
 

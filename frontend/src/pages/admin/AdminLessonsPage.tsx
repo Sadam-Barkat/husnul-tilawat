@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { toPlainArabic } from "@/lib/arabicRecitationCompare";
 import { adminAuthHeaders } from "@/lib/adminAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,7 +109,8 @@ export default function AdminLessonsPage() {
         category: form.category,
         ruleSummary: form.ruleSummary,
         arabicText: form.arabicText,
-        arabicTextForComparison: form.arabicTextForComparison,
+        arabicTextForComparison:
+          (form.arabicTextForComparison || "").trim() || toPlainArabic(form.arabicText || ""),
         translation: form.translation,
         audioUrl: form.audioUrl,
         order: Number(form.order) || 0,
@@ -248,7 +250,19 @@ export default function AdminLessonsPage() {
             </div>
             <div>
               <Label>Arabic (display / TTS)</Label>
-              <Textarea className="bg-zinc-950 border-zinc-600 mt-1 font-arabic text-lg" dir="rtl" value={form.arabicText || ""} onChange={(e) => setForm((f) => ({ ...f, arabicText: e.target.value }))} />
+              <Textarea
+                className="bg-zinc-950 border-zinc-600 mt-1 font-arabic text-lg"
+                dir="rtl"
+                value={form.arabicText || ""}
+                onChange={(e) => {
+                  const arabicText = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    arabicText,
+                    arabicTextForComparison: toPlainArabic(arabicText),
+                  }));
+                }}
+              />
             </div>
             <div>
               <Label>Arabic for comparison (plain)</Label>

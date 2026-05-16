@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { useLocation } from "react-router-dom";
-import { Volume2, Play, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Volume2, Play, CheckCircle, ChevronLeft, ChevronRight, Mic, XCircle, RotateCcw } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -9,8 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import DashboardLayout from "@/components/DashboardLayout";
 import axios from "axios";
-import { useAudioRecorder } from "@/hooks/useAudioRecorder";
-import { checkRecitation } from "@/utils/checkRecitation";
+import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { compareLessonPractice, getLessonExpectedPlain, type LessonPracticeResult } from "@/utils/compareLessonPractice";
 
 type LessonStatus = "completed" | "current" | "locked";
 
@@ -41,11 +42,6 @@ function getLatinLessonName(lesson: LessonDoc): string {
   return fromSlug || "lesson";
 }
 
-function lessonComparisonStrings(lesson: LessonDoc): { display: string; compare: string } {
-  const display = (lesson.arabicText || lesson.title || "").trim();
-  const compare = display;
-  return { display, compare };
-}
 
 function getLessonStatus(lesson: LessonDoc, sorted: LessonDoc[], passed: Set<string>): LessonStatus {
   if (passed.has(lesson._id)) return "completed";
@@ -66,17 +62,19 @@ export default function Lessons() {
   const PAGE_SIZE = 12;
   const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
 
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const { isListening, interim, startListening, stopListening, cancelListening, listenDurationMs } =
+    useSpeechRecognition();
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
-  const [checkResult, setCheckResult] = useState<any>(null);
+  const [checkResult, setCheckResult] = useState<LessonPracticeResult | null>(null);
   const [practiceOpen, setPracticeOpen] = useState(false);
   const [practiceLesson, setPracticeLesson] = useState<LessonDoc | null>(null);
 
   const resetLesson = useCallback(() => {
+    cancelListening();
     setCheckResult(null);
     setCheckError("");
-  }, []);
+  }, [cancelListening]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -239,6 +237,51 @@ export default function Lessons() {
       ),
     [lessons]
   );
+
+  const recordPracticePass = useCallback(async (lessonId: string, score: number) => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    if (!token) return;
+    try {
+      const { data } = await axios.post<{ passedLessonIds?: string[] }>(
+        "/api/lessons/practice-pass",
+        { lessonId, score },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (Array.isArray(data.passedLessonIds)) {
+        setPassedIds(new Set(data.passedLessonIds));
+      } else {
+        setPassedIds((prev) => new Set([...prev, lessonId]));
+      }
+    } catch {
+      /* progress save failed — UI still shows result */
+    }
+  }, []);
+
+  const findNextLesson = useCallback(
+    (current: LessonDoc) => {
+      const passed = new Set(passedIds);
+      passed.add(current._id);
+      const idx = sortedLessons.findIndex((l) => l._id === current._id);
+      for (let i = idx + 1; i < sortedLessons.length; i++) {
+        const candidate = sortedLessons[i];
+        if (getLessonStatus(candidate, sortedLessons, passed) !== "locked") return candidate;
+      }
+      return null;
+    },
+    [passedIds, sortedLessons],
+  );
+
+  const handleNextLesson = useCallback(() => {
+    if (!practiceLesson) return;
+    const next = findNextLesson(practiceLesson);
+    if (next) {
+      setPracticeLesson(next);
+      resetLesson();
+    } else {
+      setPracticeOpen(false);
+      resetPractice();
+    }
+  }, [practiceLesson, findNextLesson, resetLesson, resetPractice]);
 
   const totalPages = Math.max(1, Math.ceil(sortedLessons.length / PAGE_SIZE));
   const pageLessons = useMemo(
@@ -487,27 +530,32 @@ export default function Lessons() {
               </div>
 
               {practiceLesson && (
-                <div className="rounded-lg border bg-muted/40 p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Selected</p>
-                  <p className="font-arabic text-3xl" dir="rtl">
+                <div className="rounded-xl border bg-primary/5 p-6 text-center">
+                  <p className="text-xs text-muted-foreground mb-2 uppercase tracking-wide">Recite this letter</p>
+                  <p className="font-arabic text-5xl text-primary leading-relaxed" dir="rtl">
                     {practiceLesson.arabicText}
                   </p>
+                  <p className="text-sm text-muted-foreground mt-2">{getLatinLessonName(practiceLesson)}</p>
                 </div>
               )}
 
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <Button
                   type="button"
                   disabled={checking || !practiceLesson}
-                  variant={isRecording ? "destructive" : "default"}
+                  variant={isListening ? "destructive" : "default"}
+                  className="w-full"
+                  size="lg"
                   onClick={async () => {
                     if (!practiceLesson) return;
-                    if (!isRecording) {
+                    if (!isListening) {
                       resetLesson();
                       try {
-                        await startRecording();
-                      } catch {
-                        setCheckError("Could not access microphone. Please allow mic permission and try again.");
+                        await startListening();
+                      } catch (e) {
+                        setCheckError(
+                          e instanceof Error ? e.message : "Could not start speech recognition. Use Chrome or Edge and allow the mic.",
+                        );
                       }
                       return;
                     }
@@ -515,39 +563,162 @@ export default function Lessons() {
                     try {
                       setCheckError("");
                       setChecking(true);
-                      const blob = await stopRecording();
-                      const expectedText = lessonComparisonStrings(practiceLesson).compare;
-                      const result = await checkRecitation(blob, "lesson", expectedText);
+                      if (listenDurationMs() < 1200) {
+                        await new Promise((r) => setTimeout(r, 1200 - listenDurationMs()));
+                      }
+                      const spoken = await stopListening();
+                      const heard = spoken.trim();
+                      if (!heard) {
+                        setCheckError(
+                          `Still no speech detected. Use Chrome or Edge, allow the microphone, then say «${getLatinLessonName(practiceLesson)}» once and tap Stop & check (we will listen again automatically).`,
+                        );
+                        return;
+                      }
+                      const expectedPlain = getLessonExpectedPlain(practiceLesson);
+                      const result = compareLessonPractice(
+                        heard,
+                        expectedPlain,
+                        getLatinLessonName(practiceLesson),
+                      );
                       setCheckResult(result);
-                    } catch {
-                      setCheckError("Could not process audio, please try again");
+                      if (result.passed) {
+                        void recordPracticePass(practiceLesson._id, result.similarity);
+                      }
+                    } catch (e) {
+                      setCheckError(e instanceof Error ? e.message : "Could not recognize speech. Try again.");
                     } finally {
                       setChecking(false);
                     }
                   }}
                 >
-                  {checking ? "Checking…" : isRecording ? "Stop & Check" : "Practice"}
+                  {checking ? (
+                    "Checking your recitation…"
+                  ) : isListening ? (
+                    <>
+                      <Mic className="w-4 h-4 mr-2 animate-pulse" />
+                      Stop & check
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="w-4 h-4 mr-2" />
+                      Start speaking
+                    </>
+                  )}
                 </Button>
 
-                {checkError && <p className="text-xs text-destructive">{checkError}</p>}
+                {!checkResult && !checkError && !isListening && !checking && practiceLesson && (
+                  <p className="text-sm text-center text-muted-foreground">
+                    Tap <span className="font-medium text-foreground">Start speaking</span>, say «
+                    {getLatinLessonName(practiceLesson)}» in English clearly, wait until you see text under
+                    Listening, then tap <span className="font-medium text-foreground">Stop & check</span>.
+                  </p>
+                )}
 
-                {checkResult && (
-                  <div className={checkResult.passed ? "text-green-600" : "text-red-600"}>
-                    <p className="font-semibold">{checkResult.passed ? "You win" : "You loss"}</p>
-                    <p>Score: {checkResult.score}</p>
-                    <p>You said: {checkResult.spokenWord}</p>
-                    <p>Expected: {checkResult.expectedWord}</p>
-                    {!checkResult.passed && (
-                      <button
-                        onClick={() => playMolviAudio(String(practiceLesson?.audioUrl || ""))}
-                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-                      >
-                        🔊 Listen to correct pronunciation
-                      </button>
+                {isListening && (
+                  <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 flex items-center gap-3">
+                    <Mic className="w-5 h-5 text-primary shrink-0 animate-pulse" />
+                    <div>
+                      <p className="text-sm font-medium text-primary">Listening…</p>
+                      <p className="text-xs text-muted-foreground">
+                        Say «{practiceLesson ? getLatinLessonName(practiceLesson) : "the letter"}» clearly, then tap Stop
+                        & check
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {checkError && (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                    {checkError}
+                  </div>
+                )}
+
+                {checkResult && practiceLesson && (
+                  <div
+                    className={cn(
+                      "rounded-xl border px-4 py-4 space-y-4",
+                      checkResult.passed
+                        ? "border-emerald-200 bg-emerald-50/80 dark:border-emerald-900 dark:bg-emerald-950/40"
+                        : "border-red-200 bg-red-50/80 dark:border-red-900 dark:bg-red-950/40",
                     )}
-                    <button onClick={resetLesson} className="underline ml-3">
-                      Try Again
-                    </button>
+                  >
+                    <div className="flex items-center gap-2">
+                      {checkResult.passed ? (
+                        <CheckCircle className="w-6 h-6 text-emerald-600 shrink-0" />
+                      ) : (
+                        <XCircle className="w-6 h-6 text-red-600 shrink-0" />
+                      )}
+                      <div>
+                        <p
+                          className={cn(
+                            "text-lg font-semibold",
+                            checkResult.passed ? "text-emerald-800 dark:text-emerald-300" : "text-red-800 dark:text-red-300",
+                          )}
+                        >
+                          {checkResult.passed ? "Correct — well done!" : "Not quite — try again"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {checkResult.passed
+                            ? "Your recitation matched this lesson."
+                            : "Listen to the example and recite again."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div className="rounded-lg bg-background/60 px-3 py-2">
+                        <p className="text-muted-foreground text-xs mb-0.5">Match</p>
+                        <p className="font-semibold">{checkResult.similarity}%</p>
+                      </div>
+                      <div className="rounded-lg bg-background/60 px-3 py-2">
+                        <p className="text-muted-foreground text-xs mb-0.5">Score</p>
+                        <p className="font-semibold">{checkResult.score}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 text-sm border-t pt-3">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="text-muted-foreground shrink-0">You said:</span>
+                        <span className="font-arabic text-2xl text-foreground" dir="rtl">
+                          {checkResult.passed ? practiceLesson.arabicText : checkResult.spokenWord || "—"}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="text-muted-foreground shrink-0">Expected:</span>
+                        <span className="font-arabic text-2xl text-primary" dir="rtl">
+                          {practiceLesson.arabicText}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Button type="button" variant="outline" size="sm" onClick={resetLesson} className="gap-1.5">
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Try again
+                      </Button>
+                      {checkResult.passed && findNextLesson(practiceLesson) && (
+                        <Button type="button" size="sm" onClick={handleNextLesson} className="gap-1.5">
+                          Next lesson
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
+                      {checkResult.passed && !findNextLesson(practiceLesson) && (
+                        <Button type="button" size="sm" onClick={() => setPracticeOpen(false)}>
+                          Finish practice
+                        </Button>
+                      )}
+                      {!checkResult.passed && practiceLesson.audioUrl && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => playMolviAudio(String(practiceLesson.audioUrl))}
+                        >
+                          <Volume2 className="w-3.5 h-3.5 mr-1.5" />
+                          Hear correct sound
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
