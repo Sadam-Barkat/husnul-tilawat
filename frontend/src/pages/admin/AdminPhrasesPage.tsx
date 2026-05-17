@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { toPlainArabic } from "@/lib/arabicRecitationCompare";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 
 type Phrase = {
@@ -120,7 +121,7 @@ export default function AdminPhrasesPage() {
       <div className="flex justify-between items-start mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1">Pronunciation phrases</h1>
-          <p className="text-zinc-500 text-sm">AI Pronunciation page — reference lines learners practice.</p>
+          <p className="text-zinc-500 text-sm">Pronunciation page — Arabic with harakat; plain text auto-synced for matching.</p>
         </div>
         <Button
           className="bg-amber-600 hover:bg-amber-500 text-zinc-950 gap-2"
@@ -220,7 +221,19 @@ export default function AdminPhrasesPage() {
             </div>
             <div>
               <Label>Arabic text (with harakat)</Label>
-              <Textarea className="bg-zinc-950 border-zinc-600 mt-1 font-arabic text-lg" dir="rtl" value={form.text || ""} onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))} />
+              <Textarea
+                className="bg-zinc-950 border-zinc-600 mt-1 font-arabic text-lg"
+                dir="rtl"
+                value={form.text || ""}
+                onChange={(e) => {
+                  const text = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    text,
+                    textForComparison: toPlainArabic(text),
+                  }));
+                }}
+              />
             </div>
             <div>
               <Label>Plain for STT (optional — auto if empty)</Label>

@@ -3,7 +3,10 @@ import { useCallback, useRef, useState } from "react";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecognition = any;
 
-const LANG_TRY_ORDER = ["en-US", "ur-PK", "ar-SA"] as const;
+const LANG_TRY_ORDER_LESSON = ["en-US", "ur-PK", "ar-SA"] as const;
+const LANG_TRY_ORDER_PHRASE = ["ar-SA", "ur-PK", "en-US"] as const;
+
+export type SpeechRecognitionMode = "lesson" | "phrase";
 
 function getRecognitionCtor(): (new () => AnyRecognition) | null {
   if (typeof window === "undefined") return null;
@@ -102,13 +105,14 @@ function listenBurst(Ctor: new () => AnyRecognition, lang: string, ms: number): 
  * Lesson letter practice — browser speech only (no Python).
  * Optimized for Windows: en-US letter names, mic priming, retry if first pass is empty.
  */
-export function useSpeechRecognition() {
+export function useSpeechRecognition(mode: SpeechRecognitionMode = "lesson") {
+  const langOrder = mode === "phrase" ? LANG_TRY_ORDER_PHRASE : LANG_TRY_ORDER_LESSON;
   const [isListening, setIsListening] = useState(false);
   const [interim, setInterim] = useState("");
   const recRef = useRef<AnyRecognition | null>(null);
   const finalsRef = useRef("");
   const interimRef = useRef("");
-  const langRef = useRef<string>(LANG_TRY_ORDER[0]);
+  const langRef = useRef<string>(langOrder[0]);
   const startedAtRef = useRef(0);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -136,7 +140,7 @@ export function useSpeechRecognition() {
     interimRef.current = "";
     setInterim("");
     startedAtRef.current = Date.now();
-    langRef.current = LANG_TRY_ORDER[0];
+    langRef.current = langOrder[0];
 
     const rec = new Ctor();
     rec.continuous = false;
@@ -166,40 +170,49 @@ export function useSpeechRecognition() {
       throw e;
     }
     setIsListening(true);
-  }, [syncDisplay]);
+  }, [syncDisplay, langOrder]);
+
+  const peekTranscript = useCallback(
+    () => (finalsRef.current + interimRef.current).trim(),
+    [],
+  );
 
   const stopListening = useCallback(async (): Promise<string> => {
     const Ctor = getRecognitionCtor();
     const rec = recRef.current;
-
     const collectLocal = () => (finalsRef.current + interimRef.current).trim();
+    const stopWaitMs = mode === "phrase" ? 2200 : 1500;
 
     if (rec) {
-      await new Promise<void>((resolve, reject) => {
-        const finish = () => {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          const finish = () => {
+            recRef.current = null;
+            setIsListening(false);
+            resolve();
+          };
+
+          rec.onend = () => window.setTimeout(finish, 150);
+          rec.onerror = () => window.setTimeout(finish, 100);
+
+          try {
+            rec.stop();
+          } catch {
+            finish();
+          }
+        }),
+        wait(stopWaitMs).then(() => {
+          try {
+            rec.abort();
+          } catch {
+            /* ignore */
+          }
           recRef.current = null;
           setIsListening(false);
-          resolve();
-        };
-
-        rec.onend = () => {
-          window.setTimeout(finish, 500);
-        };
-
-        rec.onerror = (event: { error?: string }) => {
-          if (event.error === "no-speech" || event.error === "aborted") {
-            window.setTimeout(finish, 300);
-            return;
-          }
-          reject(new Error(event.error || "Speech recognition failed"));
-        };
-
-        try {
-          rec.stop();
-        } catch {
-          finish();
-        }
-      });
+        }),
+      ]);
+    } else {
+      setIsListening(false);
     }
 
     let text = collectLocal();
@@ -210,12 +223,13 @@ export function useSpeechRecognition() {
 
     if (!Ctor) return "";
 
-    for (const lang of LANG_TRY_ORDER) {
-      const burst = await listenBurst(Ctor, lang, 2800);
+    const burstMs = mode === "phrase" ? 2200 : 2800;
+    const langsToTry = mode === "phrase" ? langOrder.slice(0, 1) : langOrder;
+    for (const lang of langsToTry) {
+      const burst = await listenBurst(Ctor, lang, burstMs);
       if (burst) {
         finalsRef.current = burst;
         interimRef.current = "";
-        text = burst;
         setInterim(burst);
         return burst;
       }
@@ -223,7 +237,7 @@ export function useSpeechRecognition() {
 
     setInterim("");
     return "";
-  }, []);
+  }, [langOrder, mode]);
 
   const cancelListening = useCallback(() => {
     const rec = recRef.current;
@@ -248,5 +262,13 @@ export function useSpeechRecognition() {
     return Date.now() - startedAtRef.current;
   }, []);
 
-  return { isListening, interim, startListening, stopListening, cancelListening, listenDurationMs };
+  return {
+    isListening,
+    interim,
+    startListening,
+    stopListening,
+    cancelListening,
+    listenDurationMs,
+    peekTranscript,
+  };
 }

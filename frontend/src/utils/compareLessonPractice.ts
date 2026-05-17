@@ -92,6 +92,16 @@ export function getLessonExpectedPlain(lesson: {
   return toPlainArabic((lesson.arabicText || lesson.title || "").trim());
 }
 
+export function getPhraseExpectedPlain(phrase: {
+  textForComparison?: string;
+  text?: string;
+  label?: string;
+}): string {
+  const stored = (phrase.textForComparison || "").trim();
+  if (stored) return stored;
+  return toPlainArabic((phrase.text || phrase.label || "").trim());
+}
+
 /** Compare browser speech transcript to lesson plain Arabic (both normalized, no harakat). */
 export function compareLessonPractice(
   spoken: string,

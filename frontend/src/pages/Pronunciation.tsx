@@ -1,19 +1,24 @@
 import { useEffect, useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Sparkles } from "lucide-react";
+import { Mic, CheckCircle, XCircle, RotateCcw } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import DashboardLayout from "@/components/DashboardLayout";
 import axios from "axios";
-import { useAudioRecorder } from "@/hooks/useAudioRecorder";
-import { checkRecitation } from "@/utils/checkRecitation";
+import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import {
+  compareLessonPractice,
+  getPhraseExpectedPlain,
+  type LessonPracticeResult,
+} from "@/utils/compareLessonPractice";
 
 type PracticePhrase = {
   _id: string;
   label: string;
   text: string;
   textForComparison?: string;
-  audioUrl?: string; // optional if backend provides
+  audioUrl?: string;
 };
 
 export default function Pronunciation() {
@@ -21,13 +26,14 @@ export default function Pronunciation() {
   const [selectedPhraseId, setSelectedPhraseId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
 
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const { isListening, interim, startListening, stopListening, listenDurationMs, peekTranscript } =
+    useSpeechRecognition("phrase");
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
-  const [result, setResult] = useState<any>(null);
+  const [checkResult, setCheckResult] = useState<LessonPracticeResult | null>(null);
 
-  const resetLesson = useCallback(() => {
-    setResult(null);
+  const resetCheck = useCallback(() => {
+    setCheckResult(null);
     setCheckError("");
   }, []);
 
@@ -62,10 +68,13 @@ export default function Pronunciation() {
   return (
     <DashboardLayout>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <h1 className="text-3xl font-bold mb-2">AI Pronunciation Checker</h1>
-        <p className="text-muted-foreground mb-8">Record your recitation and get instant AI-powered Tajweed feedback</p>
+        <h1 className="text-3xl font-bold mb-2">Pronunciation Practice</h1>
+        <p className="text-muted-foreground mb-8">
+          Recite the ayah in Arabic. We compare your speech to the plain text stored in the database (no
+          harakat) — no AI server required.
+        </p>
 
-        {loadError && <div className="mb-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">{loadError}</div>}
+        {loadError && <motion.div className="mb-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">{loadError}</motion.div>}
 
         {phrases.length > 0 && (
           <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -77,13 +86,14 @@ export default function Pronunciation() {
                   type="button"
                   onClick={() => {
                     setSelectedPhraseId(phrase._id);
-                    resetLesson();
+                    resetCheck();
                   }}
-                  className={`px-3 py-1 rounded-full text-xs border transition ${
+                  className={cn(
+                    "px-3 py-1 rounded-full text-xs border transition",
                     phrase._id === selectedPhraseId
                       ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground hover:bg-muted"
-                  }`}
+                      : "bg-background text-muted-foreground hover:bg-muted",
+                  )}
                 >
                   {phrase.label}
                 </button>
@@ -95,7 +105,7 @@ export default function Pronunciation() {
         {selectedPhrase && (
           <Card className="mb-6">
             <CardContent className="pt-6">
-              <p className="text-sm text-muted-foreground mb-2">Reference</p>
+              <p className="text-sm text-muted-foreground mb-2 text-center">Reference (with harakat)</p>
               <p className="font-arabic text-3xl text-center" dir="rtl">
                 {selectedPhrase.text}
               </p>
@@ -106,49 +116,141 @@ export default function Pronunciation() {
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5" /> Recitation check (AI)
+              <Mic className="w-5 h-5" /> Recitation check
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {!isRecording ? (
-              <Button type="button" onClick={() => void startRecording()} disabled={checking || !selectedPhrase}>
-                Start Recording
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={checking}
-                onClick={async () => {
+          <CardContent className="space-y-4">
+            <Button
+              type="button"
+              className="w-full sm:w-auto"
+              variant={isListening ? "destructive" : "default"}
+              disabled={checking || !selectedPhrase}
+              onClick={async () => {
+                if (!selectedPhrase) return;
+
+                if (!isListening) {
+                  resetCheck();
                   try {
-                    setCheckError("");
-                    setChecking(true);
-                    const blob = await stopRecording();
-                    const expectedText = (selectedPhrase?.text || "").trim();
-                    const out = await checkRecitation(blob, "pronunciation", expectedText);
-                    setResult(out);
-                  } catch {
-                    setCheckError("Could not process audio, please try again");
-                  } finally {
-                    setChecking(false);
+                    await startListening();
+                  } catch (e) {
+                    setCheckError(
+                      e instanceof Error
+                        ? e.message
+                        : "Could not start speech recognition. Use Chrome or Edge and allow the microphone.",
+                    );
                   }
-                }}
-              >
-                Stop and Check
-              </Button>
+                  return;
+                }
+
+                try {
+                  setCheckError("");
+                  setChecking(true);
+                  if (listenDurationMs() < 1200) {
+                    await new Promise((r) => setTimeout(r, 1200 - listenDurationMs()));
+                  }
+                  const fromStop = (await stopListening()).trim();
+                  const heard = fromStop || peekTranscript() || interim.trim();
+                  if (!heard) {
+                    setCheckError(
+                      "No speech detected. Use Chrome or Edge, allow the microphone, recite the ayah clearly, then tap Stop & check.",
+                    );
+                    return;
+                  }
+                  const expectedPlain = getPhraseExpectedPlain(selectedPhrase);
+                  const result = compareLessonPractice(heard, expectedPlain);
+                  setCheckResult(result);
+                } catch (e) {
+                  setCheckError(e instanceof Error ? e.message : "Could not recognize speech. Try again.");
+                } finally {
+                  setChecking(false);
+                }
+              }}
+            >
+              {checking
+                ? "Checking…"
+                : isListening
+                  ? "Stop & check"
+                  : "Start speaking"}
+            </Button>
+
+            {(isListening || (interim && !checking)) && (
+              <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3">
+                <p className="text-sm font-medium text-primary">{isListening ? "Listening…" : "Heard"}</p>
+                <p className="font-arabic text-xl mt-1 text-foreground" dir="rtl">
+                  {interim || "…"}
+                </p>
+              </div>
             )}
 
-            {checkError && <p className="text-sm text-destructive">{checkError}</p>}
-
-            {result && (
-              <div className={result.passed ? "text-green-600" : "text-red-600"}>
-                <p>Score: {result.score}</p>
-                <p>You said: {result.spokenWord}</p>
-                <p>Expected: {result.expectedWord}</p>
-                <button onClick={resetLesson} className="underline ml-3">
-                  Try Again
-                </button>
+            {checkError && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                {checkError}
               </div>
+            )}
+
+            {checkResult && selectedPhrase && (
+              <div
+                className={cn(
+                  "rounded-xl border px-4 py-4 space-y-3",
+                  checkResult.passed
+                    ? "border-emerald-500/30 bg-emerald-500/5"
+                    : "border-red-500/30 bg-red-500/5",
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  {checkResult.passed ? (
+                    <CheckCircle className="w-6 h-6 text-emerald-600 shrink-0" />
+                  ) : (
+                    <XCircle className="w-6 h-6 text-red-600 shrink-0" />
+                  )}
+                  <p
+                    className={cn(
+                      "text-lg font-semibold",
+                      checkResult.passed ? "text-emerald-800 dark:text-emerald-300" : "text-red-800 dark:text-red-300",
+                    )}
+                  >
+                    {checkResult.passed ? "Correct — well done!" : "Not quite — try again"}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg bg-background/60 px-3 py-2">
+                    <p className="text-muted-foreground text-xs mb-0.5">Match</p>
+                    <p className="font-semibold">{checkResult.similarity}%</p>
+                  </div>
+                  <div className="rounded-lg bg-background/60 px-3 py-2">
+                    <p className="text-muted-foreground text-xs mb-0.5">Score</p>
+                    <p className="font-semibold">{checkResult.score}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-sm border-t pt-3">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="text-muted-foreground shrink-0">You said:</span>
+                    <span className="font-arabic text-2xl text-foreground" dir="rtl">
+                      {checkResult.spokenWord || "—"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="text-muted-foreground shrink-0">Expected:</span>
+                    <span className="font-arabic text-2xl text-primary" dir="rtl">
+                      {selectedPhrase.text}
+                    </span>
+                  </div>
+                </div>
+
+                <Button type="button" variant="outline" size="sm" onClick={resetCheck} className="gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Try again
+                </Button>
+              </div>
+            )}
+
+            {!checkResult && !checkError && !isListening && !checking && selectedPhrase && (
+              <p className="text-sm text-muted-foreground">
+                Tap <span className="font-medium text-foreground">Start speaking</span>, recite the ayah in Arabic,
+                then tap <span className="font-medium text-foreground">Stop & check</span>.
+              </p>
             )}
           </CardContent>
         </Card>
@@ -156,4 +258,3 @@ export default function Pronunciation() {
     </DashboardLayout>
   );
 }
-

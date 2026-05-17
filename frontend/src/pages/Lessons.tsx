@@ -10,8 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import DashboardLayout from "@/components/DashboardLayout";
 import axios from "axios";
-import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
-import { compareLessonPractice, getLessonExpectedPlain, type LessonPracticeResult } from "@/utils/compareLessonPractice";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { checkRecitation } from "@/utils/checkRecitation";
+import { getLessonExpectedPlain, type LessonPracticeResult } from "@/utils/compareLessonPractice";
 
 type LessonStatus = "completed" | "current" | "locked";
 
@@ -62,8 +63,7 @@ export default function Lessons() {
   const PAGE_SIZE = 12;
   const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
 
-  const { isListening, interim, startListening, stopListening, cancelListening, listenDurationMs } =
-    useSpeechRecognition();
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
   const [checkResult, setCheckResult] = useState<LessonPracticeResult | null>(null);
@@ -71,10 +71,9 @@ export default function Lessons() {
   const [practiceLesson, setPracticeLesson] = useState<LessonDoc | null>(null);
 
   const resetLesson = useCallback(() => {
-    cancelListening();
     setCheckResult(null);
     setCheckError("");
-  }, [cancelListening]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -543,19 +542,17 @@ export default function Lessons() {
                 <Button
                   type="button"
                   disabled={checking || !practiceLesson}
-                  variant={isListening ? "destructive" : "default"}
+                  variant={isRecording ? "destructive" : "default"}
                   className="w-full"
                   size="lg"
                   onClick={async () => {
                     if (!practiceLesson) return;
-                    if (!isListening) {
+                    if (!isRecording) {
                       resetLesson();
                       try {
-                        await startListening();
-                      } catch (e) {
-                        setCheckError(
-                          e instanceof Error ? e.message : "Could not start speech recognition. Use Chrome or Edge and allow the mic.",
-                        );
+                        await startRecording();
+                      } catch {
+                        setCheckError("Could not access the microphone. Allow mic permission and try again.");
                       }
                       return;
                     }
@@ -563,29 +560,37 @@ export default function Lessons() {
                     try {
                       setCheckError("");
                       setChecking(true);
-                      if (listenDurationMs() < 1200) {
-                        await new Promise((r) => setTimeout(r, 1200 - listenDurationMs()));
-                      }
-                      const spoken = await stopListening();
-                      const heard = spoken.trim();
-                      if (!heard) {
-                        setCheckError(
-                          `Still no speech detected. Use Chrome or Edge, allow the microphone, then say «${getLatinLessonName(practiceLesson)}» once and tap Stop & check (we will listen again automatically).`,
-                        );
+                      const blob = await stopRecording();
+                      if (!blob.size) {
+                        setCheckError("No audio recorded. Tap Record, say the letter, then tap Stop & check.");
                         return;
                       }
                       const expectedPlain = getLessonExpectedPlain(practiceLesson);
-                      const result = compareLessonPractice(
-                        heard,
-                        expectedPlain,
-                        getLatinLessonName(practiceLesson),
-                      );
+                      const api = await checkRecitation(blob, "lesson", expectedPlain);
+                      const result: LessonPracticeResult = {
+                        passed: Boolean(api.passed),
+                        score: String(api.score ?? (api.passed ? "1/1" : "0/1")),
+                        similarity: Number(api.similarity) || 0,
+                        spokenWord: String(api.spokenWord || api.transcript || "").trim(),
+                        expectedWord: expectedPlain,
+                      };
+                      if (!result.spokenWord) {
+                        setCheckError(
+                          "Could not understand the recording. Speak clearly, or start python-ai (PYTHON_AI_URL in backend/.env).",
+                        );
+                        return;
+                      }
                       setCheckResult(result);
                       if (result.passed) {
                         void recordPracticePass(practiceLesson._id, result.similarity);
                       }
                     } catch (e) {
-                      setCheckError(e instanceof Error ? e.message : "Could not recognize speech. Try again.");
+                      const msg = e instanceof Error ? e.message : "Could not check recitation.";
+                      setCheckError(
+                        /502|Python|ASR/i.test(msg)
+                          ? "Speech service unavailable. Start python-ai or check PYTHON_AI_URL in backend/.env."
+                          : msg,
+                      );
                     } finally {
                       setChecking(false);
                     }
@@ -593,7 +598,7 @@ export default function Lessons() {
                 >
                   {checking ? (
                     "Checking your recitation…"
-                  ) : isListening ? (
+                  ) : isRecording ? (
                     <>
                       <Mic className="w-4 h-4 mr-2 animate-pulse" />
                       Stop & check
@@ -601,28 +606,37 @@ export default function Lessons() {
                   ) : (
                     <>
                       <Mic className="w-4 h-4 mr-2" />
-                      Start speaking
+                      Record & practice
                     </>
                   )}
                 </Button>
 
-                {!checkResult && !checkError && !isListening && !checking && practiceLesson && (
+                {!checkResult && !checkError && !isRecording && !checking && practiceLesson && (
                   <p className="text-sm text-center text-muted-foreground">
-                    Tap <span className="font-medium text-foreground">Start speaking</span>, say «
-                    {getLatinLessonName(practiceLesson)}» in English clearly, wait until you see text under
-                    Listening, then tap <span className="font-medium text-foreground">Stop & check</span>.
+                    Tap <span className="font-medium text-foreground">Record & practice</span>, recite the letter above
+                    (1–2 seconds), then tap <span className="font-medium text-foreground">Stop & check</span>. The first
+                    check may take a few seconds.
                   </p>
                 )}
 
-                {isListening && (
-                  <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 flex items-center gap-3">
-                    <Mic className="w-5 h-5 text-primary shrink-0 animate-pulse" />
+                {checking && (
+                  <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-center">
+                    <p className="text-sm font-medium text-primary">Analyzing your recitation…</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Sending audio to the speech service. The first check after startup can take 10–20 seconds.
+                    </p>
+                  </div>
+                )}
+
+                {isRecording && (
+                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 flex items-center gap-3">
+                    <span className="relative flex h-3 w-3 shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-destructive opacity-75" />
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-destructive" />
+                    </span>
                     <div>
-                      <p className="text-sm font-medium text-primary">Listening…</p>
-                      <p className="text-xs text-muted-foreground">
-                        Say «{practiceLesson ? getLatinLessonName(practiceLesson) : "the letter"}» clearly, then tap Stop
-                        & check
-                      </p>
+                      <p className="text-sm font-medium text-destructive">Recording…</p>
+                      <p className="text-xs text-muted-foreground">Recite the letter, then tap Stop & check</p>
                     </div>
                   </div>
                 )}
@@ -680,7 +694,7 @@ export default function Lessons() {
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                         <span className="text-muted-foreground shrink-0">You said:</span>
                         <span className="font-arabic text-2xl text-foreground" dir="rtl">
-                          {checkResult.passed ? practiceLesson.arabicText : checkResult.spokenWord || "—"}
+                          {checkResult.spokenWord || "—"}
                         </span>
                       </div>
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">

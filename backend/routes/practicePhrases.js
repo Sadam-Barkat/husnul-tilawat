@@ -5,14 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const PracticePhrase = require('../models/PracticePhrase');
-
-// Plain letters only: no zabar, zair, pesh, shadda, sukun, tatweel, superscript alef. ٱ → ا.
-function toPlainArabic(s) {
-  return (s || '')
-    .replace(/\u0671/g, '\u0627')
-    .replace(/[\u064B-\u0652\u0640\u0670]/g, '')
-    .trim();
-}
+const { toPlainArabic } = require('../utils/plainArabic');
 
 // Seed a default set of phrases if collection is empty
 async function ensureSeeded() {
@@ -33,6 +26,21 @@ async function ensureSeeded() {
   await PracticePhrase.insertMany(phrases);
 }
 
+/** Fill textForComparison from text when missing (legacy rows). */
+async function backfillPlainComparison() {
+  const rows = await PracticePhrase.find({
+    isActive: { $ne: false },
+    text: { $exists: true, $nin: ['', null] },
+    $or: [{ textForComparison: { $exists: false } }, { textForComparison: '' }, { textForComparison: null }],
+  }).select('_id text');
+
+  for (const row of rows) {
+    const plain = toPlainArabic(row.text);
+    if (!plain) continue;
+    await PracticePhrase.updateOne({ _id: row._id }, { $set: { textForComparison: plain } });
+  }
+}
+
 /**
  * GET /api/practice-phrases
  * Get active phrases for recitation practice, auto-seeding defaults if empty.
@@ -40,6 +48,7 @@ async function ensureSeeded() {
 router.get('/', async (req, res) => {
   try {
     await ensureSeeded();
+    await backfillPlainComparison();
     const phrases = await PracticePhrase.find({ isActive: true }).sort({ order: 1, createdAt: 1 });
     res.json(phrases);
   } catch (err) {
